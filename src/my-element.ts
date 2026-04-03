@@ -64,6 +64,7 @@ const DEFAULT_SEARCH_URL = 'https://api.wxcc-us1.cisco.com/search'
 const DEFAULT_STATUS = 'parked'
 const DEFAULT_LOOKBACK_MINUTES = 24 * 60
 const DEFAULT_REFRESH_MS = 30000
+const STORAGE_KEY = 'queue-threshold-dashboard.filters.v1'
 
 const GRAPHQL_QUERY_PARKED = `
 query TaskDetailsParkedOverThreshold(
@@ -165,11 +166,18 @@ export class MyElement extends LitElement {
   @state() private agentStateFilter: AgentStateFilter = 'all'
   @state() private agentTeamFilter = 'all'
   @state() private agentIdleCodeFilter = 'all'
+  @state() private skillFilters: string[] = []
+  @state() private filterQueueCallsBySkill = true
+  @state() private filterConnectedCallsBySkill = true
+  @state() private filterActiveAgentsBySkill = true
+  @state() private filtersCollapsed = false
+  @state() private autoRefreshEnabled = true
 
   private timerId?: number
 
   connectedCallback() {
     super.connectedCallback()
+    this.restoreFilterState()
     this.loadData()
     this.startRefreshTimer()
   }
@@ -191,6 +199,101 @@ export class MyElement extends LitElement {
     ) {
       this.startRefreshTimer()
       this.loadData()
+    }
+
+    if (
+      changedProperties.has('agentStateFilter') ||
+      changedProperties.has('agentTeamFilter') ||
+      changedProperties.has('agentIdleCodeFilter') ||
+      changedProperties.has('skillFilters') ||
+      changedProperties.has('filterQueueCallsBySkill') ||
+      changedProperties.has('filterConnectedCallsBySkill') ||
+      changedProperties.has('filterActiveAgentsBySkill') ||
+      changedProperties.has('filtersCollapsed') ||
+      changedProperties.has('autoRefreshEnabled')
+    ) {
+      this.persistFilterState()
+    }
+  }
+
+  private persistFilterState() {
+    try {
+      window.localStorage.setItem(
+        STORAGE_KEY,
+        JSON.stringify({
+          agentStateFilter: this.agentStateFilter,
+          agentTeamFilter: this.agentTeamFilter,
+          agentIdleCodeFilter: this.agentIdleCodeFilter,
+          skillFilters: this.skillFilters,
+          filterQueueCallsBySkill: this.filterQueueCallsBySkill,
+          filterConnectedCallsBySkill: this.filterConnectedCallsBySkill,
+          filterActiveAgentsBySkill: this.filterActiveAgentsBySkill,
+          filtersCollapsed: this.filtersCollapsed,
+          autoRefreshEnabled: this.autoRefreshEnabled,
+        })
+      )
+    } catch {
+      // Ignore storage failures in restricted environments.
+    }
+  }
+
+  private restoreFilterState() {
+    try {
+      const stored = window.localStorage.getItem(STORAGE_KEY)
+      if (!stored) {
+        return
+      }
+
+      const parsed = JSON.parse(stored) as {
+        agentStateFilter?: AgentStateFilter
+        agentTeamFilter?: string
+        agentIdleCodeFilter?: string
+        skillFilters?: string[]
+        filterQueueCallsBySkill?: boolean
+        filterConnectedCallsBySkill?: boolean
+        filterActiveAgentsBySkill?: boolean
+        autoRefreshEnabled?: boolean
+      }
+
+      if (parsed.agentStateFilter) {
+        this.agentStateFilter = parsed.agentStateFilter
+      }
+
+      if (typeof parsed.agentTeamFilter === 'string') {
+        this.agentTeamFilter = parsed.agentTeamFilter
+      }
+
+      if (typeof parsed.agentIdleCodeFilter === 'string') {
+        this.agentIdleCodeFilter = parsed.agentIdleCodeFilter
+      }
+
+      if (Array.isArray(parsed.skillFilters)) {
+        this.skillFilters = parsed.skillFilters.filter(
+          (skill): skill is string => typeof skill === 'string'
+        )
+      }
+
+      if (typeof parsed.filterQueueCallsBySkill === 'boolean') {
+        this.filterQueueCallsBySkill = parsed.filterQueueCallsBySkill
+      }
+
+      if (typeof parsed.filterConnectedCallsBySkill === 'boolean') {
+      this.filterConnectedCallsBySkill = parsed.filterConnectedCallsBySkill
+      }
+
+      if (typeof parsed.filterActiveAgentsBySkill === 'boolean') {
+        this.filterActiveAgentsBySkill = parsed.filterActiveAgentsBySkill
+      }
+
+      if (typeof (parsed as { filtersCollapsed?: boolean }).filtersCollapsed === 'boolean') {
+        this.filtersCollapsed = (parsed as { filtersCollapsed?: boolean }).filtersCollapsed ?? false
+      }
+
+      if (typeof parsed.autoRefreshEnabled === 'boolean') {
+        this.autoRefreshEnabled = parsed.autoRefreshEnabled
+      }
+    } catch {
+      // Ignore invalid or unavailable stored state.
     }
   }
 
@@ -480,6 +583,47 @@ export class MyElement extends LitElement {
     this.agentIdleCodeFilter = target.value
   }
 
+  private setSkillFilter(event: Event) {
+    const target = event.target as HTMLSelectElement
+    this.skillFilters = Array.from(target.selectedOptions).map((option) => option.value)
+  }
+
+  private toggleQueueSkillFilter(event: Event) {
+    this.filterQueueCallsBySkill = (event.target as HTMLInputElement).checked
+  }
+
+  private toggleConnectedSkillFilter(event: Event) {
+    this.filterConnectedCallsBySkill = (event.target as HTMLInputElement).checked
+  }
+
+  private toggleActiveAgentSkillFilter(event: Event) {
+    this.filterActiveAgentsBySkill = (event.target as HTMLInputElement).checked
+  }
+
+  private toggleAutoRefresh(event: Event) {
+    this.autoRefreshEnabled = (event.target as HTMLInputElement).checked
+  }
+
+  private clearSkillFilter() {
+    this.skillFilters = []
+    this.filterQueueCallsBySkill = false
+    this.filterConnectedCallsBySkill = false
+    this.filterActiveAgentsBySkill = false
+  }
+
+  private toggleFiltersCollapsed() {
+    this.filtersCollapsed = !this.filtersCollapsed
+  }
+
+  private hasActiveSkillFiltering() {
+    return (
+      this.skillFilters.length > 0 &&
+      (this.filterQueueCallsBySkill ||
+        this.filterConnectedCallsBySkill ||
+        this.filterActiveAgentsBySkill)
+    )
+  }
+
   private toggleCallSort(column: CallSortColumn) {
     if (this.callSortColumn === column) {
       this.callSortDirection = this.callSortDirection === 'asc' ? 'desc' : 'asc'
@@ -555,15 +699,53 @@ export class MyElement extends LitElement {
   }
 
   private getSortedTasks() {
-    return this.sortTasks(this.tasks, this.callSortColumn, this.callSortDirection)
+    return this.sortTasks(
+      this.getSkillFilteredTasks(this.tasks, this.filterQueueCallsBySkill),
+      this.callSortColumn,
+      this.callSortDirection
+    )
   }
 
   private getSortedConnectedTasks() {
     return this.sortTasks(
-      this.connectedTasks,
+      this.getSkillFilteredTasks(this.connectedTasks, this.filterConnectedCallsBySkill),
       this.connectedCallSortColumn,
       this.connectedCallSortDirection
     )
+  }
+
+  private getTaskSkillNames(task: QueueTask) {
+    return (task.requiredSkills ?? [])
+      .map((skill) => String(skill.name ?? '').trim())
+      .filter((skill) => skill.length > 0)
+  }
+
+  private getAgentSkillNames(agent: ActiveAgentSession) {
+    return this.normalizeAgentSkillList(agent.agentSkills)
+      .map((skill) => String(skill.skillName ?? skill.name ?? '').trim())
+      .filter((skill) => skill.length > 0)
+  }
+
+  private matchesSelectedSkills(skillNames: string[]) {
+    if (this.skillFilters.length === 0) {
+      return true
+    }
+
+    const normalizedSkills = new Set(
+      skillNames
+        .map((skill) => skill.trim().toLowerCase())
+        .filter((skill) => skill.length > 0)
+    )
+
+    return this.skillFilters.some((skill) => normalizedSkills.has(skill.trim().toLowerCase()))
+  }
+
+  private getSkillFilteredTasks(tasks: QueueTask[], shouldFilter: boolean) {
+    if (!shouldFilter || this.skillFilters.length === 0) {
+      return tasks
+    }
+
+    return tasks.filter((task) => this.matchesSelectedSkills(this.getTaskSkillNames(task)))
   }
 
   private sortTasks(
@@ -640,8 +822,12 @@ export class MyElement extends LitElement {
         this.agentTeamFilter === 'all' || String(agent.teamName ?? '') === this.agentTeamFilter
       const matchesIdleCode =
         this.agentIdleCodeFilter === 'all' || idleCode === this.agentIdleCodeFilter
+      const matchesSkill =
+        !this.filterActiveAgentsBySkill ||
+        this.skillFilters.length === 0 ||
+        this.matchesSelectedSkills(this.getAgentSkillNames(agent))
 
-      return matchesState && matchesTeam && matchesIdleCode
+      return matchesState && matchesTeam && matchesIdleCode && matchesSkill
     })
 
     return filteredAgents.sort((left, right) => {
@@ -710,6 +896,12 @@ export class MyElement extends LitElement {
   private getIdleCodeOptions() {
     return [...new Set(this.activeAgents.map((agent) => this.getAgentIdleCode(agent)))]
       .filter((idleCode) => idleCode.length > 0)
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
+  }
+
+  private getAllAgentSkillOptions() {
+    return [...new Set(this.activeAgents.flatMap((agent) => this.getAgentSkillNames(agent)))]
+      .filter((skill) => skill.length > 0)
       .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
   }
 
@@ -840,12 +1032,34 @@ export class MyElement extends LitElement {
     const sortedAgents = this.getSortedAgents()
     const teamOptions = this.getTeamOptions()
     const idleCodeOptions = this.getIdleCodeOptions()
+    const skillOptions = this.getAllAgentSkillOptions()
 
     return html`
       <section class="table-shell ${this.themeClass}">
         <div class="toolbar">
           <button class="refresh" @click=${this.loadData} ?disabled=${this.loading}>
             ${this.loading ? 'Refreshing...' : 'Refresh'}
+          </button>
+          <label class="toggle toolbar-toggle">
+            <input
+              type="checkbox"
+              .checked=${this.autoRefreshEnabled}
+              @change=${this.toggleAutoRefresh}
+            />
+            Auto Refresh
+          </label>
+          <button class="refresh secondary-button" @click=${this.toggleFiltersCollapsed}>
+            ${this.filtersCollapsed ? 'Show Filters' : 'Hide Filters'}
+          </button>
+          <button
+            class="refresh secondary-button clear-filter-button"
+            @click=${this.clearSkillFilter}
+            ?disabled=${this.skillFilters.length === 0 &&
+            !this.filterQueueCallsBySkill &&
+            !this.filterConnectedCallsBySkill &&
+            !this.filterActiveAgentsBySkill}
+          >
+            ${this.hasActiveSkillFiltering() ? 'Clear Filter' : 'Not Filtering'}
           </button>
           <div class="meta">
             <span>${this.tasks.length} calls</span>
@@ -856,6 +1070,70 @@ export class MyElement extends LitElement {
             <span>Updated: ${this.lastUpdated || 'Not yet loaded'}</span>
           </div>
         </div>
+
+        ${this.filtersCollapsed
+          ? html``
+          : html`
+              <div class="table-wrap controls-wrap">
+                <div class="section-header">
+                  <div class="filters">
+                    <div class="filter-panel">
+                      <div class="filter-targets">
+                        <span class="filter-targets-label">Filter:</span>
+                        <label class="toggle">
+                          <input
+                            type="checkbox"
+                            .checked=${this.filterQueueCallsBySkill}
+                            @change=${this.toggleQueueSkillFilter}
+                          />
+                          Calls Waiting In Queue
+                        </label>
+
+                        <label class="toggle">
+                          <input
+                            type="checkbox"
+                            .checked=${this.filterConnectedCallsBySkill}
+                            @change=${this.toggleConnectedSkillFilter}
+                          />
+                          Connected Calls
+                        </label>
+
+                        <div class="toggle-group">
+                          <label class="toggle">
+                            <input
+                              type="checkbox"
+                              .checked=${this.filterActiveAgentsBySkill}
+                              @change=${this.toggleActiveAgentSkillFilter}
+                            />
+                            Active Agents
+                          </label>
+                        </div>
+                      </div>
+
+                      <label class="filter-label">
+                        <select
+                          class="filter-select multi-select"
+                          multiple
+                          @change=${this.setSkillFilter}
+                        >
+                          ${skillOptions.map(
+                            (skill) => html`
+                              <option value=${skill} .selected=${this.skillFilters.includes(skill)}>
+                                ${skill}
+                              </option>
+                            `
+                          )}
+                        </select>
+                        <span class="filter-help">
+                          Multi-select: hold Cmd on Mac or Ctrl on Windows while clicking. Use
+                          Shift to select a range.
+                        </span>
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            `}
 
         <div class="content-scroll">
           ${this.error
@@ -868,10 +1146,10 @@ export class MyElement extends LitElement {
                     <tr>
                       <th>${this.renderCallSortButton('Minutes', 'wait')}</th>
                       <th>${this.renderCallSortButton('Queue', 'queue')}</th>
-                      <th>${this.renderCallSortButton('Required Skills', 'requiredSkills')}</th>
                       <th>${this.renderCallSortButton('ANI', 'ani')}</th>
                       <th>DNIS</th>
                       <th>${this.renderCallSortButton('Customer', 'customer')}</th>
+                      <th>${this.renderCallSortButton('Required Skills', 'requiredSkills')}</th>
                       <th>${this.renderCallSortButton('Status', 'status')}</th>
                       <th>${this.renderCallSortButton('Priority', 'priority')}</th>
                       <th>${this.renderCallSortButton('Transfers', 'transfers')}</th>
@@ -887,10 +1165,10 @@ export class MyElement extends LitElement {
                             <tr>
                               <td class="strong">${this.formatWait(task.waitTimeMs)}</td>
                               <td>${task.lastQueue?.name || 'Unknown'}</td>
-                              <td>${this.formatRequiredSkills(task.requiredSkills)}</td>
                               <td>${task.origin || task.customer?.phoneNumber || 'Unknown'}</td>
                               <td>${task.destination || 'Unknown'}</td>
                               <td>${task.customer?.name || 'Unknown caller'}</td>
+                              <td>${this.formatRequiredSkills(task.requiredSkills)}</td>
                               <td>${task.status || 'Unknown'}</td>
                               <td>${task.contactPriority ?? 0}</td>
                               <td>${task.transferCount ?? 0}</td>
@@ -922,11 +1200,11 @@ export class MyElement extends LitElement {
                     <tr>
                       <th>${this.renderConnectedCallSortButton('Minutes', 'wait')}</th>
                       <th>${this.renderConnectedCallSortButton('Queue', 'queue')}</th>
-                      <th>Agent</th>
-                      <th>${this.renderConnectedCallSortButton('Required Skills', 'requiredSkills')}</th>
                       <th>${this.renderConnectedCallSortButton('ANI', 'ani')}</th>
                       <th>DNIS</th>
                       <th>${this.renderConnectedCallSortButton('Customer', 'customer')}</th>
+                      <th>Agent</th>
+                      <th>${this.renderConnectedCallSortButton('Required Skills', 'requiredSkills')}</th>
                       <th>${this.renderConnectedCallSortButton('Priority', 'priority')}</th>
                       <th>${this.renderConnectedCallSortButton('Transfers', 'transfers')}</th>
                       <th>${this.renderConnectedCallSortButton('Connected', 'connected')}</th>
@@ -940,11 +1218,11 @@ export class MyElement extends LitElement {
                             <tr>
                               <td class="strong">${this.formatWait(task.waitTimeMs)}</td>
                               <td>${task.lastQueue?.name || 'Unknown'}</td>
-                              <td>${task.owner?.name || 'Unknown'}</td>
-                              <td>${this.formatRequiredSkills(task.requiredSkills)}</td>
                               <td>${task.origin || task.customer?.phoneNumber || 'Unknown'}</td>
                               <td>${task.destination || 'Unknown'}</td>
                               <td>${task.customer?.name || 'Unknown caller'}</td>
+                              <td>${task.owner?.name || 'Unknown'}</td>
+                              <td>${this.formatRequiredSkills(task.requiredSkills)}</td>
                               <td>${task.contactPriority ?? 0}</td>
                               <td>${task.transferCount ?? 0}</td>
                               <td>${task.connectedCount ?? 0}</td>
@@ -1045,7 +1323,7 @@ export class MyElement extends LitElement {
                             const skillDescriptions = this.getAgentSkillDescriptions(agent)
                             return html`
                               <tr>
-                                <td class="agent-name-cell" title=${skillDescriptions.join('\n')}>
+                                <td class="agent-name-cell">
                                   <div class="agent-skill-hover">
                                     <span>${agent.agentName || 'Unknown'}</span>
                                     <div class="agent-skill-tooltip">
@@ -1184,7 +1462,7 @@ export class MyElement extends LitElement {
     .section-header {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-start;
       gap: 12px;
       padding-right: 12px;
     }
@@ -1202,6 +1480,39 @@ export class MyElement extends LitElement {
       display: flex;
       gap: 12px;
       flex-wrap: wrap;
+      align-items: flex-start;
+    }
+
+    .filter-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .filter-targets {
+      display: inline-flex;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+      padding-top: 10px;
+    }
+
+    .filter-targets-label {
+      font-size: 0.85rem;
+      font-weight: 700;
+      color: #334e68;
+    }
+
+    .toggle-group {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+
+    .clear-filter-button {
+      padding: 6px 12px;
+      font-size: 0.82rem;
     }
 
     .filter-select {
@@ -1211,6 +1522,13 @@ export class MyElement extends LitElement {
       color: inherit;
       font: inherit;
       padding: 4px 8px;
+    }
+
+    .multi-select {
+      min-width: 320px;
+      min-height: 140px;
+      resize: both;
+      overflow: auto;
     }
 
     table {
@@ -1300,23 +1618,24 @@ export class MyElement extends LitElement {
       position: relative;
       display: inline-flex;
       align-items: center;
+      vertical-align: top;
     }
 
     .agent-skill-tooltip {
       position: absolute;
       left: 0;
-      top: calc(100% + 8px);
+      bottom: calc(100% + 12px);
       z-index: 20;
       display: none;
-      min-width: 280px;
-      max-width: 420px;
+      min-width: 420px;
+      max-width: 720px;
       padding: 10px 12px;
       border: 1px solid #bcccdc;
       border-radius: 8px;
       background: #102a43;
       color: #f0f4f8;
       box-shadow: 0 12px 24px rgba(16, 42, 67, 0.18);
-      white-space: normal;
+      white-space: nowrap;
       text-transform: none;
       letter-spacing: normal;
     }
