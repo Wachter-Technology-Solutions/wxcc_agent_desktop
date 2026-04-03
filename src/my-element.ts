@@ -30,9 +30,11 @@ type QueueTask = {
 type ActiveAgentSession = {
   agentName?: string
   teamName?: string
+  agentSkills?: unknown
   startTime?: number | string
   channelInfo?: Array<{
     currentState?: string
+    idleCodeName?: string
     lastActivityTime?: number | string
   }>
 }
@@ -55,8 +57,6 @@ type AgentSortColumn =
   | 'agentName'
   | 'teamName'
   | 'currentState'
-  | 'startTime'
-  | 'lastActivityTime'
 
 type AgentStateFilter = 'all' | 'available' | 'idle' | 'rona' | 'wrapup'
 
@@ -115,20 +115,22 @@ query activeAgents(
   $filter: AgentSessionFilters
   $extFilter: AgentSessionSpecificFilters
   $pagination: Pagination
-) {
-  agentSession(
-    from: $from
+  ) {
+    agentSession(
+      from: $from
     to: $to
     filter: $filter
     extFilter: $extFilter
     pagination: $pagination
   ) {
     agentSessions {
+      agentSkills
       agentName
       teamName
       startTime
       channelInfo {
         currentState
+        idleCodeName
         lastActivityTime
       }
     }
@@ -162,6 +164,7 @@ export class MyElement extends LitElement {
   @state() private agentSortDirection: 'asc' | 'desc' = 'asc'
   @state() private agentStateFilter: AgentStateFilter = 'all'
   @state() private agentTeamFilter = 'all'
+  @state() private agentIdleCodeFilter = 'all'
 
   private timerId?: number
 
@@ -428,20 +431,6 @@ export class MyElement extends LitElement {
     return descriptions.length > 0 ? descriptions.join(', ') : 'None'
   }
 
-  private formatDateTime(value?: number | string) {
-    if (value === undefined || value === null || value === '') {
-      return 'Unknown'
-    }
-
-    const numericValue = Number(value)
-    const date = Number.isFinite(numericValue) ? new Date(numericValue) : new Date(String(value))
-    if (Number.isNaN(date.getTime())) {
-      return 'Unknown'
-    }
-
-    return date.toLocaleString()
-  }
-
   private getPrimaryChannel(agent: ActiveAgentSession) {
     return Array.isArray(agent.channelInfo) ? agent.channelInfo[0] : undefined
   }
@@ -486,6 +475,11 @@ export class MyElement extends LitElement {
     this.agentTeamFilter = target.value
   }
 
+  private setAgentIdleCodeFilter(event: Event) {
+    const target = event.target as HTMLSelectElement
+    this.agentIdleCodeFilter = target.value
+  }
+
   private toggleCallSort(column: CallSortColumn) {
     if (this.callSortColumn === column) {
       this.callSortDirection = this.callSortDirection === 'asc' ? 'desc' : 'asc'
@@ -510,8 +504,7 @@ export class MyElement extends LitElement {
     }
 
     this.agentSortColumn = column
-    this.agentSortDirection =
-      column === 'startTime' || column === 'lastActivityTime' ? 'desc' : 'asc'
+    this.agentSortDirection = 'asc'
   }
 
   private toggleConnectedCallSort(column: CallSortColumn) {
@@ -639,19 +632,19 @@ export class MyElement extends LitElement {
 
   private getSortedAgents() {
     const filteredAgents = [...this.activeAgents].filter((agent) => {
+      const idleCode = this.getAgentIdleCode(agent)
       const matchesState =
         this.agentStateFilter === 'all' ||
         this.getNormalizedAgentState(agent) === this.agentStateFilter
       const matchesTeam =
         this.agentTeamFilter === 'all' || String(agent.teamName ?? '') === this.agentTeamFilter
+      const matchesIdleCode =
+        this.agentIdleCodeFilter === 'all' || idleCode === this.agentIdleCodeFilter
 
-      return matchesState && matchesTeam
+      return matchesState && matchesTeam && matchesIdleCode
     })
 
     return filteredAgents.sort((left, right) => {
-      const leftChannel = this.getPrimaryChannel(left)
-      const rightChannel = this.getPrimaryChannel(right)
-
       let leftValue: string | number | undefined
       let rightValue: string | number | undefined
 
@@ -667,14 +660,6 @@ export class MyElement extends LitElement {
         case 'currentState':
           leftValue = this.getAgentStatePriority(left)
           rightValue = this.getAgentStatePriority(right)
-          break
-        case 'startTime':
-          leftValue = Number(left.startTime)
-          rightValue = Number(right.startTime)
-          break
-        case 'lastActivityTime':
-          leftValue = Number(leftChannel?.lastActivityTime)
-          rightValue = Number(rightChannel?.lastActivityTime)
           break
       }
 
@@ -718,6 +703,133 @@ export class MyElement extends LitElement {
       .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
   }
 
+  private getAgentIdleCode(agent: ActiveAgentSession) {
+    return String(this.getPrimaryChannel(agent)?.idleCodeName ?? '').trim()
+  }
+
+  private getIdleCodeOptions() {
+    return [...new Set(this.activeAgents.map((agent) => this.getAgentIdleCode(agent)))]
+      .filter((idleCode) => idleCode.length > 0)
+      .sort((left, right) => left.localeCompare(right, undefined, { sensitivity: 'base' }))
+  }
+
+  private normalizeAgentSkillList(agentSkills: unknown): Array<Record<string, unknown>> {
+    if (Array.isArray(agentSkills)) {
+      return agentSkills.filter(
+        (skill): skill is Record<string, unknown> =>
+          Boolean(skill) && typeof skill === 'object' && !Array.isArray(skill)
+      )
+    }
+
+    if (typeof agentSkills === 'string') {
+      try {
+        const parsed = JSON.parse(agentSkills) as unknown
+        return this.normalizeAgentSkillList(parsed)
+      } catch {
+        return []
+      }
+    }
+
+    return []
+  }
+
+  private formatAgentSkillValue(value: unknown): string {
+    if (Array.isArray(value)) {
+      return value.map((item) => this.formatAgentSkillValue(item)).filter(Boolean).join(', ')
+    }
+
+    if (value === undefined || value === null) {
+      return ''
+    }
+
+    if (typeof value === 'object') {
+      try {
+        return JSON.stringify(value)
+      } catch {
+        return String(value)
+      }
+    }
+
+    return String(value).trim()
+  }
+
+  private getAgentSkillDisplayValue(skill: Record<string, unknown>): string {
+    const preferredKeys = [
+      'skillValue',
+      'value',
+      'skillValues',
+      'values',
+      'intVal',
+      'boolVal',
+      'strVal',
+      'stringVal',
+      'enumVal',
+      'enumValues',
+      'numberVal',
+      'numericVal',
+    ]
+
+    for (const key of preferredKeys) {
+      if (key in skill) {
+        const formatted = this.formatAgentSkillValue(skill[key])
+        if (formatted) {
+          return formatted
+        }
+      }
+    }
+
+    const ignoredKeys = new Set([
+      'skillName',
+      'name',
+      '__typename',
+      'id',
+      'skillId',
+      'description',
+    ])
+
+    for (const [key, rawValue] of Object.entries(skill)) {
+      if (ignoredKeys.has(key)) {
+        continue
+      }
+
+      const formatted = this.formatAgentSkillValue(rawValue)
+      if (!formatted) {
+        continue
+      }
+
+      return `${key}: ${formatted}`
+    }
+
+    return ''
+  }
+
+  private getAgentSkillDescriptions(agent: ActiveAgentSession) {
+    const skills = this.normalizeAgentSkillList(agent.agentSkills)
+
+    if (skills.length === 0) {
+      return ['No skills returned']
+    }
+
+    const descriptions = skills
+      .map((skill) => {
+        const name = String(skill.skillName ?? skill.name ?? '').trim()
+        const value = this.getAgentSkillDisplayValue(skill)
+
+        if (!name) {
+          return value
+        }
+
+        if (!value) {
+          return name
+        }
+
+        return `${name}: ${value}`
+      })
+      .filter((description): description is string => Boolean(description))
+
+    return descriptions.length > 0 ? descriptions : ['No skills returned']
+  }
+
   private get themeClass() {
     return this.darkmode === 'true' ? 'theme-dark' : 'theme-light'
   }
@@ -727,6 +839,7 @@ export class MyElement extends LitElement {
     const sortedConnectedTasks = this.getSortedConnectedTasks()
     const sortedAgents = this.getSortedAgents()
     const teamOptions = this.getTeamOptions()
+    const idleCodeOptions = this.getIdleCodeOptions()
 
     return html`
       <section class="table-shell ${this.themeClass}">
@@ -895,6 +1008,25 @@ export class MyElement extends LitElement {
                         )}
                       </select>
                     </label>
+
+                    <label class="filter-label">
+                      Idle Code
+                      <select class="filter-select" @change=${this.setAgentIdleCodeFilter}>
+                        <option value="all" ?selected=${this.agentIdleCodeFilter === 'all'}>
+                          All
+                        </option>
+                        ${idleCodeOptions.map(
+                          (idleCode) => html`
+                            <option
+                              value=${idleCode}
+                              ?selected=${this.agentIdleCodeFilter === idleCode}
+                            >
+                              ${idleCode}
+                            </option>
+                          `
+                        )}
+                      </select>
+                    </label>
                   </div>
                 </div>
                 <table>
@@ -903,29 +1035,41 @@ export class MyElement extends LitElement {
                       <th>${this.renderAgentSortButton('Agent', 'agentName')}</th>
                       <th>${this.renderAgentSortButton('Team', 'teamName')}</th>
                       <th>${this.renderAgentSortButton('Current State', 'currentState')}</th>
-                      <th>${this.renderAgentSortButton('Session Start', 'startTime')}</th>
-                      <th>${this.renderAgentSortButton('Last Activity', 'lastActivityTime')}</th>
+                      <th>Idle Code</th>
                     </tr>
                   </thead>
                   <tbody>
                     ${sortedAgents.length > 0
                       ? sortedAgents.map(
                           (agent) => {
-                            const channel = this.getPrimaryChannel(agent)
+                            const skillDescriptions = this.getAgentSkillDescriptions(agent)
                             return html`
                               <tr>
-                                <td>${agent.agentName || 'Unknown'}</td>
+                                <td class="agent-name-cell" title=${skillDescriptions.join('\n')}>
+                                  <div class="agent-skill-hover">
+                                    <span>${agent.agentName || 'Unknown'}</span>
+                                    <div class="agent-skill-tooltip">
+                                      <div class="agent-skill-tooltip-title">Skills</div>
+                                      ${skillDescriptions.map(
+                                        (description) => html`
+                                          <div class="agent-skill-tooltip-line">
+                                            ${description}
+                                          </div>
+                                        `
+                                      )}
+                                    </div>
+                                  </div>
+                                </td>
                                 <td>${agent.teamName || 'Unknown'}</td>
-                                <td>${channel?.currentState || 'Unknown'}</td>
-                                <td>${this.formatDateTime(agent.startTime)}</td>
-                                <td>${this.formatDateTime(channel?.lastActivityTime)}</td>
+                                <td>${this.getPrimaryChannel(agent)?.currentState || 'Unknown'}</td>
+                                <td>${this.getAgentIdleCode(agent) || '—'}</td>
                               </tr>
                             `
                           }
                         )
                       : html`
                           <tr>
-                            <td colspan="5">No active agents found.</td>
+                            <td colspan="4">No active agents found.</td>
                           </tr>
                         `}
                   </tbody>
@@ -1150,6 +1294,49 @@ export class MyElement extends LitElement {
 
     .strong {
       font-weight: 700;
+    }
+
+    .agent-skill-hover {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+    }
+
+    .agent-skill-tooltip {
+      position: absolute;
+      left: 0;
+      top: calc(100% + 8px);
+      z-index: 20;
+      display: none;
+      min-width: 280px;
+      max-width: 420px;
+      padding: 10px 12px;
+      border: 1px solid #bcccdc;
+      border-radius: 8px;
+      background: #102a43;
+      color: #f0f4f8;
+      box-shadow: 0 12px 24px rgba(16, 42, 67, 0.18);
+      white-space: normal;
+      text-transform: none;
+      letter-spacing: normal;
+    }
+
+    .agent-skill-hover:hover .agent-skill-tooltip {
+      display: block;
+    }
+
+    .agent-skill-tooltip-title {
+      font-size: 0.78rem;
+      font-weight: 700;
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #d9e2ec;
+    }
+
+    .agent-skill-tooltip-line {
+      font-size: 0.82rem;
+      line-height: 1.4;
     }
 
     .mono {
