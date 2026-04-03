@@ -1,0 +1,21 @@
+{
+  "name": "wxcc_agent_desktop_queue_threshold_dashboard",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "game": "concurrently \"vite build --watch\" \"vite preview\""
+  },
+  "dependencies": {
+    "concurrently": "^9.2.1",
+    "lit": "^3.3.2",
+    "vite-plugin-node-polyfills": "^0.26.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "^8.0.1"
+  }
+}
