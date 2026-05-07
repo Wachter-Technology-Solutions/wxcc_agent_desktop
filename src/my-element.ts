@@ -1203,10 +1203,8 @@ export class MyElement extends LitElement {
             `}
 
         <div class="content-scroll">
-          ${this.error
-            ? html`<p class="status error">${this.error}</p>`
-            : html`
-              <div class="table-wrap">
+          ${this.error ? html`<p class="status error">${this.error}</p>` : html``}
+          <div class="table-wrap">
                 <div class="section-title">Calls Waiting In Queue</div>
                 <table>
                   <thead>
@@ -1258,9 +1256,9 @@ export class MyElement extends LitElement {
                         `}
                   </tbody>
                 </table>
-              </div>
+          </div>
 
-              <div class="table-wrap">
+          <div class="table-wrap">
                 <div class="section-title">Connected Calls</div>
                 <table>
                   <thead>
@@ -1308,9 +1306,9 @@ export class MyElement extends LitElement {
                         `}
                   </tbody>
                 </table>
-              </div>
+          </div>
 
-              <div class="table-wrap">
+          <div class="table-wrap">
                 <div class="section-header">
                   <div class="section-title">Active Agents</div>
                   <div class="filters">
@@ -1419,8 +1417,7 @@ export class MyElement extends LitElement {
                         `}
                   </tbody>
                 </table>
-              </div>
-            `}
+          </div>
         </div>
       </section>
     `
