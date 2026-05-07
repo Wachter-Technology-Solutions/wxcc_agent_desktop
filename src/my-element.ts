@@ -174,31 +174,46 @@ export class MyElement extends LitElement {
   @state() private autoRefreshEnabled = true
 
   private timerId?: number
+  private resizeObserver?: ResizeObserver
+  private wasSizedVisible = false
+  private boundVisibilityChange = () => this.handleVisibilityChange()
+  private boundWindowFocus = () => this.handleWindowFocus()
 
   connectedCallback() {
     super.connectedCallback()
     this.restoreFilterState()
+    document.addEventListener('visibilitychange', this.boundVisibilityChange)
+    window.addEventListener('focus', this.boundWindowFocus)
+    this.startResizeObserver()
     this.loadData()
     this.startRefreshTimer()
   }
 
   disconnectedCallback() {
     super.disconnectedCallback()
+    document.removeEventListener('visibilitychange', this.boundVisibilityChange)
+    window.removeEventListener('focus', this.boundWindowFocus)
     if (this.timerId) {
       window.clearInterval(this.timerId)
     }
+    this.resizeObserver?.disconnect()
   }
 
   updated(changedProperties: Map<string, unknown>) {
     if (
       changedProperties.has('refreshMs') ||
+      changedProperties.has('autoRefreshEnabled') ||
       changedProperties.has('token') ||
       changedProperties.has('statusFilter') ||
       changedProperties.has('searchUrl') ||
       changedProperties.has('lookbackMinutes')
     ) {
       this.startRefreshTimer()
-      this.loadData()
+      if (this.hasRequiredInputs()) {
+        this.loadData()
+      } else {
+        this.requestUpdate()
+      }
     }
 
     if (
@@ -300,6 +315,11 @@ export class MyElement extends LitElement {
   private startRefreshTimer() {
     if (this.timerId) {
       window.clearInterval(this.timerId)
+      this.timerId = undefined
+    }
+
+    if (!this.autoRefreshEnabled) {
+      return
     }
 
     if (!Number.isFinite(this.refreshMs) || this.refreshMs <= 0) {
@@ -309,12 +329,62 @@ export class MyElement extends LitElement {
     this.timerId = window.setInterval(() => this.loadData(), this.refreshMs)
   }
 
+  private hasRequiredInputs() {
+    return Boolean(this.token)
+  }
+
+  private handleVisibilityChange() {
+    if (document.visibilityState !== 'visible') {
+      return
+    }
+
+    this.startRefreshTimer()
+    if (this.hasRequiredInputs()) {
+      this.loadData()
+    } else {
+      this.requestUpdate()
+    }
+  }
+
+  private handleWindowFocus() {
+    this.startRefreshTimer()
+    if (this.hasRequiredInputs()) {
+      this.loadData()
+    } else {
+      this.requestUpdate()
+    }
+  }
+
+  private startResizeObserver() {
+    this.resizeObserver?.disconnect()
+
+    this.resizeObserver = new ResizeObserver((entries) => {
+      const entry = entries[0]
+      if (!entry) {
+        return
+      }
+
+      const { width, height } = entry.contentRect
+      const isVisible = width > 0 && height > 0
+
+      if (isVisible && !this.wasSizedVisible) {
+        this.startRefreshTimer()
+        if (this.hasRequiredInputs()) {
+          this.loadData()
+        } else {
+          this.requestUpdate()
+        }
+      }
+
+      this.wasSizedVisible = isVisible
+    })
+
+    this.resizeObserver.observe(this)
+  }
+
   private async loadData() {
-    if (!this.token) {
+    if (!this.hasRequiredInputs()) {
       this.error = 'Missing access token.'
-      this.tasks = []
-      this.connectedTasks = []
-      this.activeAgents = []
       return
     }
 
@@ -464,9 +534,6 @@ export class MyElement extends LitElement {
       this.activeAgents = activeAgents
       this.lastUpdated = new Date(nowMs).toLocaleTimeString()
     } catch (error) {
-      this.tasks = []
-      this.connectedTasks = []
-      this.activeAgents = []
       this.error =
         error instanceof Error ? error.message : 'Unable to load dashboard data.'
     } finally {
